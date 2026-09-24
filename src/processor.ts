@@ -328,7 +328,7 @@ export class Processor {
                     structuredResponse = parseLLMResponse(JSON.parse(responseContent))
                   }
 
-                  Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
+                  await Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
 
                   messages.push({
                     content: responseContent,
@@ -391,6 +391,14 @@ export class Processor {
     functionCalls: FunctionCall[], parentSpan: Span): Promise<[Directive[], Promise<void>[],
       Promise<[string, string]>[]]> {
     const directives: Directive[] = []
+
+    for (const call of functionCalls) {
+      const function_ = functions[call.name]
+      const powerSound = function_ && buildPowerSoundDirective(call, function_)
+      if (powerSound) {
+        directives.push(powerSound as unknown as Directive)
+      }
+    }
 
     const noResponsePromises: Promise<void>[] = []
     const hasResponsePromises: Promise<[string, string]>[] = []
@@ -564,6 +572,19 @@ export class Processor {
       }
       return resultState
     })
+  }
+}
+
+function buildPowerSoundDirective (call: FunctionCall, function_: ExtendedFunctionInfo): null | { playTimes: number; soundToPlay: string; type: 'localAudioFilePlay' } {
+  if (!call.name.endsWith('_state') || !/state/u.test(`${call.name} ${function_.description}`) || typeof call.arguments !== 'object' || call.arguments === null) {
+    return null
+  }
+  const state = (call.arguments as { state?: unknown }).state
+  if (state !== 0 && state !== 1) return null
+  return {
+    playTimes: 1,
+    soundToPlay: state === 1 ? 'AliceIoTSoundsTurnOn' : 'AliceIoTSoundsTurnOff',
+    type: 'localAudioFilePlay'
   }
 }
 
