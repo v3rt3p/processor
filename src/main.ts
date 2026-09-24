@@ -15,6 +15,7 @@ import { SystemStateServer } from './llm/state/system'
 import { StateServer } from './llm/state/types'
 import { LLMMessage } from './llm/types'
 import { getLogger } from './logger'
+import { NlpServiceClient } from './nlp/client'
 import { Processor } from './processor'
 import { InMemorySessionStorage } from './session-storage/in-memory'
 
@@ -79,11 +80,13 @@ const promptGenerator = new HandlebarsPromptGenerator(
 )
 
 const sessionStorage = new InMemorySessionStorage<LLMMessage[]>()
+const nlpService = new NlpServiceClient(environment.NLP_SERVICE_URL, environment.NLP_SERVICE_TIMEOUT_MS)
 
 const processor = new Processor({
   cacheSize: environment.CACHE_SIZE,
   functionServers,
   model: environment.OPENAI_MODEL,
+  nlpService,
   openAI,
   promptGenerator,
   sessionStorage,

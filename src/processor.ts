@@ -17,6 +17,7 @@ import {
   LLMMessage
 } from './llm/types'
 import { getLogger } from './logger'
+import { NlpServiceClient } from './nlp/client'
 import { SessionStorage } from './session-storage/types'
 
 const logger = getLogger()
@@ -31,6 +32,7 @@ interface ProcessorParameters {
   cacheSize: number;
   functionServers: FunctionServer[];
   model: string;
+  nlpService: NlpServiceClient;
   openAI: OpenAI;
   promptGenerator: PromptGenerator;
   sessionStorage: SessionStorage<LLMMessage[]>;
@@ -164,6 +166,49 @@ export class Processor {
               })
 
               const text = request.text.trim()
+
+              if (!request.isExternalEvent) {
+                const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
+                if (nlpResult?.kind === 'response') {
+                  isFirstRequest = false
+                  await send({
+                    data: {
+                      directives: [],
+                      finished: true,
+                      shouldListen: false,
+                      text: nlpResult.text
+                    },
+                    type: 'partialResponse'
+                  })
+                  webSocket.close()
+                  return
+                }
+                if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
+                  const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
+                    sessionId,
+                    request.metadata,
+                    functions,
+                    nlpResult.functionCalls,
+                    processSpan
+                  )
+                  await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
+                  const resultText = (await Promise.all(responsePromises))
+                    .map(([function_, value]) => `${function_}: ${value}`)
+                    .join('\\n')
+                  await send({
+                    data: {
+                      directives,
+                      ...(responsePromises.length === 0
+                        ? { finished: true, shouldListen: false }
+                        : { finished: false }),
+                      text: resultText
+                    },
+                    type: 'partialResponse'
+                  })
+                  if (responsePromises.length === 0) webSocket.close()
+                  return
+                }
+              }
 
               if (request.isExternalEvent) {
                 messages.push({
