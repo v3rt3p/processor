@@ -60,13 +60,13 @@ export class NlpServiceClient {
 }
 
 function toCatalog (functions: Functions): Record<string, z.infer<typeof functionCatalogEntry>> {
-  return Object.fromEntries(Object.entries(functions).map(([name, info]) => [name, toCatalogEntry(info)]))
+  return Object.fromEntries(Object.entries(functions).map(([name, info]) => [name, toCatalogEntry(name, info)]))
 }
 
-function toCatalogEntry (info: FunctionInfo): z.infer<typeof functionCatalogEntry> {
+function toCatalogEntry (name: string, info: FunctionInfo): z.infer<typeof functionCatalogEntry> {
   // Zod schemas are executable objects; expose the common state contract without
   // coupling the NLP service to processor internals.
-  if (/\bstate\b/u.test(info.description) || /_state$/u.test(info.description)) {
+  if (/\bstate\b/u.test(`${info.description} ${name}`) || /_state$/u.test(name)) {
     return {
       arguments: {
         state: {
