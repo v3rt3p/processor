@@ -392,14 +392,6 @@ export class Processor {
       Promise<[string, string]>[]]> {
     const directives: Directive[] = []
 
-    for (const call of functionCalls) {
-      const function_ = functions[call.name]
-      const powerSound = function_ && buildPowerSoundDirective(call, function_)
-      if (powerSound) {
-        directives.push(powerSound as unknown as Directive)
-      }
-    }
-
     const noResponsePromises: Promise<void>[] = []
     const hasResponsePromises: Promise<[string, string]>[] = []
 
@@ -408,6 +400,11 @@ export class Processor {
       if (!function_) {
         this.logger.warn(`Tried to call non-existent function '${call.name}'`)
         continue
+      }
+
+      const powerSound = buildPowerSoundDirective(call, function_)
+      if (powerSound) {
+        directives.push(powerSound as unknown as Directive)
       }
 
       if (function_.server instanceof DirectiveFunctionServer) {
@@ -575,16 +572,29 @@ export class Processor {
   }
 }
 
-function buildPowerSoundDirective (call: FunctionCall, function_: ExtendedFunctionInfo): null | { playTimes: number; soundToPlay: string; type: 'localAudioFilePlay' } {
+function buildPowerSoundDirective (call: FunctionCall, function_: ExtendedFunctionInfo): Directive | null {
   if (!call.name.endsWith('_state') || !/state/u.test(`${call.name} ${function_.description}`) || typeof call.arguments !== 'object' || call.arguments === null) {
     return null
   }
   const state = (call.arguments as { state?: unknown }).state
   if (state !== 0 && state !== 1) return null
+
+  // customQuasar is the portable processor contract; quasar-server forwards its data as an Alice directive.
   return {
-    playTimes: 1,
-    soundToPlay: state === 1 ? 'AliceIoTSoundsTurnOn' : 'AliceIoTSoundsTurnOff',
-    type: 'localAudioFilePlay'
+    data: {
+      IsLedSilent: true,
+      Name: 'local_audio_file_play',
+      Payload: {
+        fields: {
+          play_times: { numberValue: 1 },
+          sound_to_play: {
+            stringValue: state === 1 ? 'AliceIoTSoundsTurnOn' : 'AliceIoTSoundsTurnOff'
+          }
+        }
+      },
+      Type: 'client_action'
+    },
+    type: 'customQuasar'
   }
 }
 
