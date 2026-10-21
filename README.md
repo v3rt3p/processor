@@ -1,6 +1,6 @@
 # processor
 
-Основной WebSocket LLM-процессор голосового агента. Endpoint: `GET /process` через WebSocket upgrade.
+WebSocket LLM processor for the voice agent. The endpoint is `GET /process` through a WebSocket upgrade.
 
 ## Docker Compose
 
@@ -11,14 +11,14 @@ OPENAI_API_KEY=... docker compose up -d processor
 
 Standalone: `docker build -t processor . && docker run --rm -p 8080:8080 --env-file .env processor`.
 
-## Обязательная конфигурация
+## Required configuration
 
 - `PORT` (default `8080`)
-- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
-- `PROCESSOR_FUNCTION_SERVER_URLS`, `PROCESSOR_STATE_SERVER_URLS` — comma-separated URL, например `http://function-state-server:8080`
-- `NLP_SERVICE_URL` — необязательно, например `http://nlp-service:8090`
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`
+- `PROCESSOR_FUNCTION_SERVER_URLS` and `PROCESSOR_STATE_SERVER_URLS`, comma-separated URLs such as `http://function-state-server:8080`
+- `NLP_SERVICE_URL`, optional, such as `http://nlp-service:8090`
 - `NLP_SERVICE_TIMEOUT_MS` (default `500`)
-- `PROCESSOR_MCP_SERVER_URLS` — URL в формате `URL#server-name`
-- `PROMPT_TEMPLATE_PATH`, `STATE_PROMPT_TEMPLATE_PATH`
+- `PROCESSOR_MCP_SERVER_URLS`, using `URL#server-name` entries
+- `PROMPT_TEMPLATE_PATH` and `STATE_PROMPT_TEMPLATE_PATH`
 
-Формального HTTP health endpoint нет. Сервис хранит сессии в памяти, поэтому масштабирование требует sticky sessions или отдельного session store. Не полагайтесь на значения `localhost` внутри контейнера.
+There is no formal HTTP health endpoint. Sessions are stored in memory, so horizontal scaling requires sticky sessions or an external session store. Do not use `localhost` to reach another container.
