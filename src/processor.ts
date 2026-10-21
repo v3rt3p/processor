@@ -17,6 +17,7 @@ import {
   LLMMessage
 } from './llm/types'
 import { getLogger } from './logger'
+import { NlpServiceClient } from './nlp/client'
 import { SessionStorage } from './session-storage/types'
 
 const logger = getLogger()
@@ -31,6 +32,7 @@ interface ProcessorParameters {
   cacheSize: number;
   functionServers: FunctionServer[];
   model: string;
+  nlpService: NlpServiceClient;
   openAI: OpenAI;
   promptGenerator: PromptGenerator;
   sessionStorage: SessionStorage<LLMMessage[]>;
@@ -165,6 +167,49 @@ export class Processor {
 
               const text = request.text.trim()
 
+              if (!request.isExternalEvent) {
+                const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
+                if (nlpResult?.kind === 'response') {
+                  isFirstRequest = false
+                  await send({
+                    data: {
+                      directives: [],
+                      finished: true,
+                      shouldListen: false,
+                      text: nlpResult.text
+                    },
+                    type: 'partialResponse'
+                  })
+                  webSocket.close()
+                  return
+                }
+                if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
+                  const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
+                    sessionId,
+                    request.metadata,
+                    functions,
+                    nlpResult.functionCalls,
+                    processSpan
+                  )
+                  await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
+                  const resultText = (await Promise.all(responsePromises))
+                    .map(([function_, value]) => `${function_}: ${value}`)
+                    .join('\\n')
+                  await send({
+                    data: {
+                      directives,
+                      ...(responsePromises.length === 0
+                        ? { finished: true, shouldListen: false }
+                        : { finished: false }),
+                      text: resultText
+                    },
+                    type: 'partialResponse'
+                  })
+                  if (responsePromises.length === 0) webSocket.close()
+                  return
+                }
+              }
+
               if (request.isExternalEvent) {
                 messages.push({
                   content: `External event happened: '${text}'`,
@@ -283,7 +328,7 @@ export class Processor {
                     structuredResponse = parseLLMResponse(JSON.parse(responseContent))
                   }
 
-                  Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
+                  await Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
 
                   messages.push({
                     content: responseContent,
@@ -355,6 +400,11 @@ export class Processor {
       if (!function_) {
         this.logger.warn(`Tried to call non-existent function '${call.name}'`)
         continue
+      }
+
+      const powerSound = buildPowerSoundDirective(call, function_)
+      if (powerSound) {
+        directives.push(powerSound as unknown as Directive)
       }
 
       if (function_.server instanceof DirectiveFunctionServer) {
@@ -519,6 +569,32 @@ export class Processor {
       }
       return resultState
     })
+  }
+}
+
+function buildPowerSoundDirective (call: FunctionCall, function_: ExtendedFunctionInfo): Directive | null {
+  if (!call.name.endsWith('_state') || !/state/u.test(`${call.name} ${function_.description}`) || typeof call.arguments !== 'object' || call.arguments === null) {
+    return null
+  }
+  const state = (call.arguments as { state?: unknown }).state
+  if (state !== 0 && state !== 1) return null
+
+  // customQuasar is the portable processor contract; quasar-server forwards its data as an Alice directive.
+  return {
+    data: {
+      IsLedSilent: true,
+      Name: 'local_audio_file_play',
+      Payload: {
+        fields: {
+          play_times: { numberValue: 1 },
+          sound_to_play: {
+            stringValue: state === 1 ? 'AliceIoTSoundsTurnOn' : 'AliceIoTSoundsTurnOff'
+          }
+        }
+      },
+      Type: 'client_action'
+    },
+    type: 'customQuasar'
   }
 }
 
