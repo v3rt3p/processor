@@ -1,4 +1,5 @@
-import { Functions, State } from '../types'
+import { Functions } from '../function/types'
+import { State } from '../state/types'
 
 export interface PromptGenerator {
   generate(functions: Functions): string;
