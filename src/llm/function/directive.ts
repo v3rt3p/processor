@@ -1,34 +1,34 @@
 import { Span, startSpan } from '@sentry/node'
-import { Directive } from '@v3rt3p/types/directives'
+import { ProcessorDirectiveFunctions } from '@v3rt3p/types/processor'
 import z from 'zod'
 
-import { FunctionInfo, Functions, FunctionServer } from './types'
+import { Functions, FunctionServer } from './types'
 
-export interface DirectiveFunction<T> {
-  implementation: (sessionId: string, metadata: object, input: T) => Promise<Directive>,
-  info: FunctionInfo<T>,
+export interface DirectiveResult {
+  arguments: unknown
+  name: string
 }
 
 export class DirectiveFunctionServer implements FunctionServer {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor (private readonly directiveFunctions: Record<string, DirectiveFunction<any>>) {}
+  constructor (private readonly directiveFunctions: ProcessorDirectiveFunctions) {}
 
-  async callDirectiveFunction (sessionId: string, metadata: object, functionName: string,
-    arguments_: unknown, parentSpan: Span): Promise<Directive | null> {
+  async callDirectiveFunction (sessionId: string, _metadata: object, functionName: string,
+    arguments_: unknown, parentSpan: Span): Promise<DirectiveResult | null> {
     return startSpan({
       attributes: {
         parameters: JSON.stringify(arguments_, undefined, 2)
       },
       name: `Calling directive function ${sessionId}`,
       parentSpan
-    }, async span => {
+    }, async () => {
       const directiveFunction = this.directiveFunctions[functionName]
       if (!directiveFunction) {
         return null
       }
-      const result = await directiveFunction.implementation(sessionId, metadata, arguments_)
-      span.setAttribute('result', JSON.stringify(result, undefined, 2))
-      return result
+      return {
+        arguments: arguments_,
+        name: functionName
+      }
     })
   }
 
@@ -38,7 +38,12 @@ export class DirectiveFunctionServer implements FunctionServer {
 
   async getFunctions (): Promise<Functions> {
     return Object.fromEntries(Object.entries(this.directiveFunctions)
-      .map(([name, function_]) => [name, function_.info]))
+      .map(([name, function_]) => [name, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        argumentsSchema: z.fromJSONSchema(function_.arguments as any),
+        description: function_.description,
+        hasResponse: false
+      }]))
   }
 
   getName (): string {
@@ -46,57 +51,4 @@ export class DirectiveFunctionServer implements FunctionServer {
   }
 
   async initialize (): Promise<void> {}
-}
-
-export function createDirectiveFunctionServer ():
-DirectiveFunctionServer {
-  return new DirectiveFunctionServer({
-    assistant_disable_bluetooth: createDirectiveFunction({
-      argumentsSchema: z.null(),
-      description: 'disables bluetooth on the voice assistant',
-      hasResponse: false,
-    }, async () => ({
-      type: 'bluetoothDisable'
-    })),
-    assistant_enable_bluetooth: createDirectiveFunction({
-      argumentsSchema: z.null(),
-      description: 'enables bluetooth on the voice assistant',
-      hasResponse: false,
-    }, async () => ({
-      type: 'bluetoothEnable'
-    })),
-    assistant_set_volume_level: createDirectiveFunction({
-      argumentsSchema: z.object({
-        level: z.number().min(1).max(10).describe('volume level')
-      }),
-      description: 'sets volume level of the voice assistant, use this method only when user directly asks for your volume',
-      hasResponse: false
-    }, async (_, __, parameters) => ({
-      level: parameters.level,
-      type: 'soundSetLevel'
-    })),
-    assistant_set_volume_louder: createDirectiveFunction({
-      argumentsSchema: z.null(),
-      description: 'makes volume level of the voice assistant relatively louder, use this method only when user directly asks for your volume',
-      hasResponse: false
-    }, async () => ({
-      type: 'soundLouder'
-    })),
-    assistant_set_volume_quieter: createDirectiveFunction({
-      argumentsSchema: z.null(),
-      description: 'makes volume level of the voice assistant relatively quieter, use this method only when user directly asks for your volume',
-      hasResponse: false
-    }, async () => ({
-      type: 'soundQuieter'
-    }))
-  })
-}
-
-function createDirectiveFunction<T> (info: FunctionInfo<T>, implementation:
-(sessionId: string, metadata: object, input: T) => Promise<Directive>):
-  DirectiveFunction<T> {
-  return {
-    implementation,
-    info,
-  }
 }

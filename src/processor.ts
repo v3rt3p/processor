@@ -1,6 +1,5 @@
 import { continueTrace, Span, startInactiveSpan, startSpan } from '@sentry/node'
 import { JSONParser } from '@streamparser/json'
-import { Directive } from '@v3rt3p/types/directives'
 import { processorClientWebSocketMessage, ProcessorServerWebSocketMessage } from '@v3rt3p/types/processor'
 import { Sema } from 'async-sema'
 import { LRUCache } from 'lru-cache'
@@ -9,7 +8,7 @@ import { OpenAI } from 'openai'
 import { WebSocket } from 'ws'
 import z from 'zod'
 
-import { DirectiveFunctionServer } from './llm/function/directive'
+import { DirectiveFunctionServer, DirectiveResult } from './llm/function/directive'
 import { FunctionCall, FunctionInfo, Functions, FunctionServer } from './llm/function/types'
 import { PromptGenerator } from './llm/prompt-generator/types'
 import { State, StateServer } from './llm/state/types'
@@ -136,7 +135,9 @@ export class Processor {
               op: 'prepare',
               parentSpan: span
             }, async prepareSpan => {
-              functions = await this.getFunctions(prepareSpan)
+              functions = await this.getFunctions(
+                [new DirectiveFunctionServer(decodedData.data.directiveFunctions),
+                  ...this.parameters.functionServers], prepareSpan)
               messages.push({
                 content: this.parameters.promptGenerator.generate(functions),
                 role: 'system'
@@ -192,9 +193,10 @@ export class Processor {
                     processSpan
                   )
                   await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
-                  const resultText = (await Promise.all(responsePromises))
+                  const responseResults = await Promise.all(responsePromises)
+                  const resultText = responseResults
                     .map(([function_, value]) => `${function_}: ${value}`)
-                    .join('\\n')
+                    .join(String.raw`\n`)
                   await send({
                     data: {
                       directives,
@@ -230,7 +232,7 @@ export class Processor {
                 }, async singleOperationSpan => {
                   this.logger.info(`Processing ${messages.length} messages`)
 
-                  const directives: Directive[] = []
+                  const directiveResults: DirectiveResult[] = []
                   const hasResponsePromises: Promise<[string, string]>[] = []
                   const noResponsePromises: Promise<void>[] = []
 
@@ -245,16 +247,16 @@ export class Processor {
 
                     structuredResponse = parseLLMResponse(JSON.parse(responseContent))
 
-                    const [newDirectives, functionsPromises, functionsWithResponsePromises] =
+                    const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
                       await this.callFunctions(sessionId, request.metadata, functions,
                         structuredResponse.functionCalls, singleOperationSpan)
 
-                    directives.push(...newDirectives)
+                    directiveResults.push(...newDirectiveResults)
                     hasResponsePromises.push(...functionsWithResponsePromises)
                     noResponsePromises.push(...functionsPromises)
                   } else {
                     this.logger.info('Querying LLM')
-                    const callFunctionsPromises: Promise<[Directive[], Promise<void>,
+                    const callFunctionsPromises: Promise<[DirectiveResult[], Promise<void>,
                       Promise<[string, string]>]>[] = []
 
                     const jsonParser = new JSONParser()
@@ -267,11 +269,11 @@ export class Processor {
                           if (!parsed) {
                             throw new Error('empty')
                           }
-                          const [newDirectives, functionsPromises, functionsWithResponsePromises] =
+                          const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
                           await this.callFunctions(sessionId, request.metadata, functions,
                             [parsed], singleOperationSpan)
 
-                          directives.push(...newDirectives)
+                          directiveResults.push(...newDirectiveResults)
                           hasResponsePromises.push(...functionsWithResponsePromises)
                           noResponsePromises.push(...functionsPromises)
                         } catch (error) {
@@ -319,7 +321,7 @@ export class Processor {
                     const result = await Promise.all(callFunctionsPromises)
 
                     for (const part of result) {
-                      directives.push(...part[0])
+                      directiveResults.push(...part[0])
                       part[1].catch(error => this.logger.error('Failed to call functions: ', error))
                     }
 
@@ -345,7 +347,7 @@ export class Processor {
 
                   await send({
                     data: {
-                      directives,
+                      directives: directiveResults,
                       finished: hasResponsePromises.length === 0,
                       shouldListen: structuredResponse.requireMoreInput,
                       text: structuredResponse.text
@@ -388,9 +390,9 @@ export class Processor {
   }
 
   private async callFunctions (sessionId: string, metadata: object, functions: ExtendedFunctions,
-    functionCalls: FunctionCall[], parentSpan: Span): Promise<[Directive[], Promise<void>[],
+    functionCalls: FunctionCall[], parentSpan: Span): Promise<[DirectiveResult[], Promise<void>[],
       Promise<[string, string]>[]]> {
-    const directives: Directive[] = []
+    const directiveResults: DirectiveResult[] = []
 
     const noResponsePromises: Promise<void>[] = []
     const hasResponsePromises: Promise<[string, string]>[] = []
@@ -402,18 +404,13 @@ export class Processor {
         continue
       }
 
-      const powerSound = buildPowerSoundDirective(call, function_)
-      if (powerSound) {
-        directives.push(powerSound as unknown as Directive)
-      }
-
       if (function_.server instanceof DirectiveFunctionServer) {
         const directive = await function_.server.callDirectiveFunction(sessionId, metadata,
           call.name, call.arguments, parentSpan)
         if (!directive) {
           continue
         }
-        directives.push(directive)
+        directiveResults.push(directive)
         continue
       }
 
@@ -457,17 +454,17 @@ export class Processor {
       }
     }
 
-    return [directives, noResponsePromises, hasResponsePromises]
+    return [directiveResults, noResponsePromises, hasResponsePromises]
   }
 
-  private async getFunctions (parentSpan: Span): Promise<ExtendedFunctions> {
+  private async getFunctions (functionServers: FunctionServer[], parentSpan: Span): Promise<ExtendedFunctions> {
     return startSpan({
       name: 'Requesting functions',
       op: 'get-functions',
       parentSpan
     }, async span => {
       const promises: Promise<[FunctionServer, Functions, undefined | unknown]>[] = []
-      for (const server of this.parameters.functionServers) {
+      for (const server of functionServers) {
         promises.push((async () => {
           try {
             const functions = await server.getFunctions(span)
@@ -569,32 +566,6 @@ export class Processor {
       }
       return resultState
     })
-  }
-}
-
-function buildPowerSoundDirective (call: FunctionCall, function_: ExtendedFunctionInfo): Directive | null {
-  if (!call.name.endsWith('_state') || !/state/u.test(`${call.name} ${function_.description}`) || typeof call.arguments !== 'object' || call.arguments === null) {
-    return null
-  }
-  const state = (call.arguments as { state?: unknown }).state
-  if (state !== 0 && state !== 1) return null
-
-  // customQuasar is the portable processor contract; quasar-server forwards its data as an Alice directive.
-  return {
-    data: {
-      IsLedSilent: true,
-      Name: 'local_audio_file_play',
-      Payload: {
-        fields: {
-          play_times: { numberValue: 1 },
-          sound_to_play: {
-            stringValue: state === 1 ? 'AliceIoTSoundsTurnOn' : 'AliceIoTSoundsTurnOff'
-          }
-        }
-      },
-      Type: 'client_action'
-    },
-    type: 'customQuasar'
   }
 }
 
