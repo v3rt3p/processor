@@ -87,6 +87,7 @@ const processor = new Processor({
   nlpService,
   openAI,
   promptGenerator,
+  reasoningEffort: environment.OPENAI_REASONING_EFFORT,
   sessionStorage,
   stateServers
 })

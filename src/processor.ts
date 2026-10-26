@@ -5,6 +5,7 @@ import { Sema } from 'async-sema'
 import { LRUCache } from 'lru-cache'
 import { randomUUID } from 'node:crypto'
 import { OpenAI } from 'openai'
+import { ReasoningEffort } from 'openai/resources/shared.js'
 import { WebSocket } from 'ws'
 import z from 'zod'
 
@@ -34,6 +35,7 @@ interface ProcessorParameters {
   nlpService: NlpServiceClient;
   openAI: OpenAI;
   promptGenerator: PromptGenerator;
+  reasoningEffort?: string;
   sessionStorage: SessionStorage<LLMMessage[]>;
   stateServers: StateServer[];
 }
@@ -299,6 +301,7 @@ export class Processor {
                     const response = await this.parameters.openAI.chat.completions.create({
                       messages,
                       model: this.parameters.model,
+                      reasoning_effort: this.parameters.reasoningEffort as ReasoningEffort,
                       stream: true
                     })
 
