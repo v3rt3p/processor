@@ -1,6 +1,6 @@
 import { continueTrace, Span, startInactiveSpan, startSpan } from '@sentry/node'
 import { JSONParser } from '@streamparser/json'
-import { processorClientWebSocketMessage, ProcessorServerWebSocketMessage } from '@v3rt3p/types/processor'
+import { processorClientWebSocketMessage, ProcessorProcessMetadata, ProcessorServerWebSocketMessage } from '@v3rt3p/types/processor'
 import { Sema } from 'async-sema'
 import { LRUCache } from 'lru-cache'
 import { randomUUID } from 'node:crypto'
@@ -535,7 +535,7 @@ export class Processor {
     })
   }
 
-  private async getState (sessionId: string, metadata: object, parentSpan: Span): Promise<State> {
+  private async getState (sessionId: string, metadata: ProcessorProcessMetadata, parentSpan: Span): Promise<State> {
     return startSpan({
       name: 'Requesting state',
       op: 'get-state',
@@ -545,14 +545,16 @@ export class Processor {
       for (const server of this.parameters.stateServers) {
         promises.push((async () => {
           try {
-            const state = await server.getState(sessionId, metadata, span)
+            const state = await server.getState(sessionId,
+              Object.fromEntries(Object.entries(metadata).map(entry => [entry[0], entry[1].value])), span)
             return [server, state, undefined]
           } catch (error) {
             return [server, {}, error]
           }
         })())
       }
-      const resultState: State = {}
+
+      let resultState: State = {}
       const results = await Promise.all(promises)
       for (const [server, state, error] of results) {
         if (error) {
@@ -567,6 +569,12 @@ export class Processor {
           resultState[key] = stateEntry
         }
       }
+
+      resultState = {
+        ...resultState,
+        ...metadata
+      }
+
       return resultState
     })
   }

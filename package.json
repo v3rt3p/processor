@@ -18,7 +18,7 @@
     "@types/json-schema": "^7.0.15",
     "@types/node": "^24.0.14",
     "@types/ws": "^8.18.1",
-    "@v3rt3p/types": "github:v3rt3p/types#1.0.6",
+    "@v3rt3p/types": "github:v3rt3p/types#1.0.12",
     "async-sema": "^3.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
