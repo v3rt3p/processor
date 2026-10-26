@@ -28,13 +28,21 @@ export class SystemStateServer implements StateServer {
         description: 'current time and date in DD-MM-YYYY HH:MM:SS format',
         value: this.getCurrentTimeAndDateFormatted()
       },
-      input_person_age: {
+      speaker_alarms: {
+        description: 'current set of alarms on speaker',
+        value: (metadata as { alarms: string }).alarms ?? 'none'
+      },
+      speaker_input_person_age: {
         description: 'age of person who talked to you',
         value: (metadata as { age: string }).age ?? 'unknown'
       },
-      input_person_gender: {
+      speaker_input_person_gender: {
         description: 'gender of person who talked to you',
         value: (metadata as { gender: string }).gender ?? 'unknown'
+      },
+      speaker_timers: {
+        description: 'current set of timers on speaker',
+        value: (metadata as { timers: string }).timers ?? 'none'
       }
     }
   }
