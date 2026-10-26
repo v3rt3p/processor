@@ -545,8 +545,7 @@ export class Processor {
       for (const server of this.parameters.stateServers) {
         promises.push((async () => {
           try {
-            const state = await server.getState(sessionId,
-              Object.fromEntries(Object.entries(metadata).map(entry => [entry[0], entry[1].value])), span)
+            const state = await server.getState(sessionId, metadata.internal, span)
             return [server, state, undefined]
           } catch (error) {
             return [server, {}, error]
@@ -572,7 +571,7 @@ export class Processor {
 
       resultState = {
         ...resultState,
-        ...metadata
+        ...metadata.readyToUse
       }
 
       return resultState
