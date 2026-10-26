@@ -446,8 +446,16 @@ export class Processor {
               return
             }
             if (call.schedule) {
-              this.logger.info(`Calling ${call.name} with ${JSON.stringify(arguments_.data)} after ${call.schedule} milliseconds`)
-              await new Promise(resolve => setTimeout(resolve, call.schedule))
+              (async () => {
+                try {
+                  this.logger.info(`Calling ${call.name} with ${JSON.stringify(arguments_.data)} after ${call.schedule} milliseconds`)
+                  await new Promise(resolve => setTimeout(resolve, call.schedule))
+                  await function_.server.callFunction(sessionId, metadata, call.name, arguments_.data ?? {}, parentSpan)
+                } catch (error) {
+                  this.logger.warn(`Failed to call function '${call.name}' with parameters ${JSON.stringify(call.arguments)}: `, error)
+                }
+              })()
+              return
             }
             await function_.server.callFunction(sessionId, metadata, call.name, arguments_.data ?? {}, parentSpan)
           } catch (error) {
