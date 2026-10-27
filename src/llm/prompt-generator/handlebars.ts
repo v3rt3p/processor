@@ -5,20 +5,28 @@ import { State } from '../state/types'
 import { PromptGenerator } from './types'
 
 export class HandlebarsPromptGenerator implements PromptGenerator {
+  private readonly functionsTemplate: HandlebarsTemplateDelegate
   private readonly stateTemplate: HandlebarsTemplateDelegate
   private readonly template: HandlebarsTemplateDelegate
 
-  constructor (rawTemplate: string, rawStateTemplate: string) {
+  constructor (rawTemplate: string, rawStateTemplate: string, rawFunctionsTemplate: string) {
     this.template = Handlebars.compile(rawTemplate, {
       noEscape: true
     })
     this.stateTemplate = Handlebars.compile(rawStateTemplate, {
       noEscape: true
     })
+    this.functionsTemplate = Handlebars.compile(rawFunctionsTemplate, {
+      noEscape: true
+    })
   }
 
-  generate (functions: Functions): string {
-    return this.template({
+  generate (): string {
+    return this.template({})
+  }
+
+  generateFunctions (functions: Functions): string {
+    return this.functionsTemplate({
       functionsText: `${this.getFunctionsText(functions)}`
     })
   }

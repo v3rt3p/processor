@@ -19,7 +19,9 @@ export interface FunctionServer {
   callFunction(sessionId: string, metadata: object, functionName: string,
     parameters: unknown, parentSpan: Span): Promise<string>;
 
-  getFunctions(parentSpan: Span): Promise<Functions>;
+  getFunctions(sessionId: string, metadata: object, parentSpan: Span): Promise<Functions>;
+
+  getIndependentFunctions(parentSpan: Span): Promise<Functions>;
 
   getName(): string;
 

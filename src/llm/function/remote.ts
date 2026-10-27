@@ -1,50 +1,11 @@
 import { Span, startSpan } from '@sentry/node'
+import { functions } from '@v3rt3p/types/function-state-server'
 import z from 'zod'
 
-import { FunctionInfo, Functions, FunctionServer } from './types'
-
-const functionArgumentType = z.object({
-  constraints: z.discriminatedUnion('type', [
-    z.object({
-      argumentType: z.literal('number'),
-      max: z.number(),
-      min: z.number(),
-      type: z.literal('number-min-max')
-    }),
-    z.object({
-      argumentType: z.literal('number'),
-      type: z.literal('number-variants'),
-      variants: z.array(z.object({
-        description: z.string(),
-        value: z.number()
-      }))
-    }),
-    z.object({
-      argumentType: z.literal('string'),
-      type: z.literal('string-not-empty')
-    }),
-    z.object({
-      argumentType: z.literal('string'),
-      type: z.literal('string-variants'),
-      variants: z.array(z.object({
-        description: z.string(),
-        value: z.string()
-      }))
-    })
-  ]),
-  description: z.string()
-})
-
-const functionInfoType = z.object({
-  arguments: z.record(z.string(), functionArgumentType),
-  description: z.string()
-})
-
-const functionsType = z.record(z.string(), functionInfoType)
+import { Functions, FunctionServer } from './types'
 
 export class RemoteFunctionServer implements FunctionServer {
   constructor (private readonly url: string) {}
-
   async callFunction (sessionId: string, metadata: object, name: string,
     arguments_: unknown, parentSpan: Span): Promise<string> {
     return startSpan({
@@ -65,27 +26,52 @@ export class RemoteFunctionServer implements FunctionServer {
         headers: {
           'content-type': 'application/json'
         },
-        method: 'PATCH'
+        method: 'POST'
       })
       return ''
     })
   }
 
-  async getFunctions (parentSpan: Span): Promise<Functions> {
+  async getFunctions (sessionId: string, metadata: object, parentSpan: Span): Promise<Functions> {
     return startSpan({
       name: `Requesting functions from ${this.getName()}`,
       op: 'get-functions-server',
       parentSpan
     }, async () => {
       const response = await fetch(this.url, {
+        body: JSON.stringify({
+          metadata,
+          sessionId
+        }),
         headers: {
-          'content-type': 'application/json'
+          'content-type': 'application/json',
         },
-        method: 'GET'
+        method: 'PUT'
       })
       return Object.fromEntries(Object.entries(
-        functionsType.parse(await response.json()))
-        .map(([name, entry]) => ([name, mapEntry(entry)])))
+        functions.parse(await response.json()))
+        .map(([name, entry]) => ([name, ({
+          argumentsSchema: z.fromJSONSchema(entry.arguments),
+          description: entry.description,
+          hasResponse: entry.hasResponse
+        })])))
+    })
+  }
+
+  async getIndependentFunctions (parentSpan: Span): Promise<Functions> {
+    return startSpan({
+      name: `Requesting independent functions from ${this.getName()}`,
+      op: 'get-independent-functions-server',
+      parentSpan
+    }, async () => {
+      const response = await fetch(this.url)
+      return Object.fromEntries(Object.entries(
+        functions.parse(await response.json()))
+        .map(([name, entry]) => ([name, ({
+          argumentsSchema: z.fromJSONSchema(entry.arguments),
+          description: entry.description,
+          hasResponse: entry.hasResponse
+        })])))
     })
   }
 
@@ -94,35 +80,4 @@ export class RemoteFunctionServer implements FunctionServer {
   }
 
   async initialize (): Promise<void> {}
-}
-
-function convertToZodType (type: z.infer<typeof functionArgumentType>): z.ZodSchema {
-  switch (type.constraints.type) {
-    case 'number-min-max': {
-      return z.number().min(type.constraints.min).max(type.constraints.max).describe(type.description)
-    }
-    case 'number-variants': {
-      return z.union(type.constraints.variants.map(variant =>
-        z.literal(variant.value).describe(variant.description))).describe(type.description)
-    }
-    case 'string-not-empty': {
-      return z.string().nonempty().describe(type.description)
-    }
-    case 'string-variants': {
-      return z.union(type.constraints.variants.map(variant =>
-        z.literal(variant.value).describe(variant.description))).describe(type.description)
-    }
-  }
-}
-
-function mapEntry (entry: z.infer<typeof functionInfoType>): FunctionInfo {
-  const types: Record<string, z.ZodSchema> = {}
-  for (const [key, value] of Object.entries(entry.arguments)) {
-    types[key] = convertToZodType(value)
-  }
-  return {
-    argumentsSchema: Object.keys(types).length === 0 ? z.unknown() : z.object(types),
-    description: entry.description,
-    hasResponse: false
-  }
 }

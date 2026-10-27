@@ -74,7 +74,8 @@ for (const url of environment.PROCESSOR_MCP_SERVER_URLS) {
 
 const promptGenerator = new HandlebarsPromptGenerator(
   fs.readFileSync(environment.PROMPT_TEMPLATE_PATH).toString('utf8'),
-  fs.readFileSync(environment.STATE_PROMPT_TEMPLATE_PATH).toString('utf8')
+  fs.readFileSync(environment.STATE_PROMPT_TEMPLATE_PATH).toString('utf8'),
+  fs.readFileSync(environment.FUNCTIONS_PROMPT_TEMPLATE_PATH).toString('utf8')
 )
 
 const sessionStorage = new InMemorySessionStorage<LLMMessage[]>()

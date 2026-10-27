@@ -40,7 +40,11 @@ export class RemoteMCPServer implements FunctionServer {
     })
   }
 
-  async getFunctions (parentSpan: Span): Promise<Functions> {
+  async getFunctions (): Promise<Functions> {
+    return {}
+  }
+
+  async getIndependentFunctions (parentSpan: Span): Promise<Functions> {
     return startSpan({
       name: `Requesting MCP functions from ${this.getName()}`,
       op: 'get-mcp-functions-server',

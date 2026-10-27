@@ -11,7 +11,6 @@ export interface DirectiveResult {
 
 export class DirectiveFunctionServer implements FunctionServer {
   constructor (private readonly directiveFunctions: ProcessorDirectiveFunctions) {}
-
   async callDirectiveFunction (sessionId: string, _metadata: object, functionName: string,
     arguments_: unknown, parentSpan: Span): Promise<DirectiveResult | null> {
     return startSpan({
@@ -37,6 +36,10 @@ export class DirectiveFunctionServer implements FunctionServer {
   }
 
   async getFunctions (): Promise<Functions> {
+    return {}
+  }
+
+  async getIndependentFunctions (): Promise<Functions> {
     return Object.fromEntries(Object.entries(this.directiveFunctions)
       .map(([name, function_]) => [name, {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

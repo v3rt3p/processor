@@ -137,17 +137,22 @@ export class Processor {
               op: 'prepare',
               parentSpan: span
             }, async prepareSpan => {
-              functions = await this.getFunctions(
-                [new DirectiveFunctionServer(decodedData.data.directiveFunctions),
-                  ...this.parameters.functionServers], prepareSpan)
               messages.push({
-                content: this.parameters.promptGenerator.generate(functions),
+                content: this.parameters.promptGenerator.generate(),
                 role: 'system'
               })
 
-              const state = await this.getIndependentState(sessionId, prepareSpan)
+              const state = await this.getIndependentState(prepareSpan)
               messages.push({
                 content: this.parameters.promptGenerator.generateState(state),
+                role: 'system'
+              })
+
+              functions = await this.getIndependentFunctions(
+                [new DirectiveFunctionServer(decodedData.data.directiveFunctions),
+                  ...this.parameters.functionServers], prepareSpan)
+              messages.push({
+                content: this.parameters.promptGenerator.generateFunctions(functions),
                 role: 'system'
               })
             })
@@ -168,63 +173,65 @@ export class Processor {
                 role: 'system'
               })
 
+              const newFunctions = await this.getFunctions(sessionId, decodedData.data.metadata,
+                this.parameters.functionServers, processSpan)
+              messages.push({
+                content: this.parameters.promptGenerator.generateFunctions(newFunctions),
+                role: 'system'
+              })
+              functions = {
+                ...functions,
+                ...newFunctions
+              }
+
               const text = request.text.trim()
 
-              if (!request.isExternalEvent) {
-                const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
-                if (nlpResult?.kind === 'response') {
-                  isFirstRequest = false
-                  await send({
-                    data: {
-                      directives: [],
-                      finished: true,
-                      shouldListen: false,
-                      text: nlpResult.text
-                    },
-                    type: 'partialResponse'
-                  })
-                  webSocket.close()
-                  return
-                }
-                if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
-                  const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
-                    sessionId,
-                    request.metadata,
-                    functions,
-                    nlpResult.functionCalls,
-                    processSpan
-                  )
-                  await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
-                  const responseResults = await Promise.all(responsePromises)
-                  const resultText = responseResults
-                    .map(([function_, value]) => `${function_}: ${value}`)
-                    .join(String.raw`\n`)
-                  await send({
-                    data: {
-                      directives,
-                      ...(responsePromises.length === 0
-                        ? { finished: true, shouldListen: false }
-                        : { finished: false }),
-                      text: resultText
-                    },
-                    type: 'partialResponse'
-                  })
-                  if (responsePromises.length === 0) webSocket.close()
-                  return
-                }
+              const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
+              if (nlpResult?.kind === 'response') {
+                isFirstRequest = false
+                await send({
+                  data: {
+                    directives: [],
+                    finished: true,
+                    shouldListen: false,
+                    text: nlpResult.text
+                  },
+                  type: 'partialResponse'
+                })
+                webSocket.close()
+                return
+              }
+              if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
+                const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
+                  sessionId,
+                  request.metadata.internal,
+                  functions,
+                  nlpResult.functionCalls,
+                  processSpan
+                )
+                await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
+                const responseResults = await Promise.all(responsePromises)
+                const resultText = responseResults
+                  .map(([function_, value]) => `${function_}: ${value}`)
+                  .join(String.raw`\n`)
+                await send({
+                  data: {
+                    directives,
+                    ...(responsePromises.length === 0
+                      ? { finished: true, shouldListen: false }
+                      : { finished: false }),
+                    text: resultText
+                  },
+                  type: 'partialResponse'
+                })
+                if (responsePromises.length === 0) webSocket.close()
+                return
               }
 
-              if (request.isExternalEvent) {
-                messages.push({
-                  content: `External event happened: '${text}'`,
-                  role: 'system'
-                })
-              } else {
-                messages.push({
-                  content: text,
-                  role: 'user'
-                })
-              }
+              messages.push({
+                content: text,
+                role: 'user'
+              })
 
               while (true) {
                 if (!await startSpan({
@@ -250,7 +257,7 @@ export class Processor {
                     structuredResponse = parseLLMResponse(JSON.parse(responseContent))
 
                     const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
-                      await this.callFunctions(sessionId, request.metadata, functions,
+                      await this.callFunctions(sessionId, request.metadata.internal, functions,
                         structuredResponse.functionCalls, singleOperationSpan)
 
                     directiveResults.push(...newDirectiveResults)
@@ -272,7 +279,7 @@ export class Processor {
                             throw new Error('empty')
                           }
                           const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
-                          await this.callFunctions(sessionId, request.metadata, functions,
+                          await this.callFunctions(sessionId, request.metadata.internal, functions,
                             [parsed], singleOperationSpan)
 
                           directiveResults.push(...newDirectiveResults)
@@ -468,7 +475,8 @@ export class Processor {
     return [directiveResults, noResponsePromises, hasResponsePromises]
   }
 
-  private async getFunctions (functionServers: FunctionServer[], parentSpan: Span): Promise<ExtendedFunctions> {
+  private async getFunctions (sessionId: string, metadata: ProcessorProcessMetadata,
+    functionServers: FunctionServer[], parentSpan: Span): Promise<ExtendedFunctions> {
     return startSpan({
       name: 'Requesting functions',
       op: 'get-functions',
@@ -478,7 +486,7 @@ export class Processor {
       for (const server of functionServers) {
         promises.push((async () => {
           try {
-            const functions = await server.getFunctions(span)
+            const functions = await server.getFunctions(sessionId, metadata, span)
             return [server, functions, undefined]
           } catch (error) {
             return [server, {}, error]
@@ -507,7 +515,47 @@ export class Processor {
     })
   }
 
-  private async getIndependentState (sessionId: string, parentSpan: Span): Promise<State> {
+  private async getIndependentFunctions (functionServers: FunctionServer[], parentSpan: Span):
+  Promise<ExtendedFunctions> {
+    return startSpan({
+      name: 'Requesting independent functions',
+      op: 'get-functions',
+      parentSpan
+    }, async span => {
+      const promises: Promise<[FunctionServer, Functions, undefined | unknown]>[] = []
+      for (const server of functionServers) {
+        promises.push((async () => {
+          try {
+            const functions = await server.getIndependentFunctions(span)
+            return [server, functions, undefined]
+          } catch (error) {
+            return [server, {}, error]
+          }
+        })())
+      }
+      const resultFunctions: ExtendedFunctions = {}
+      const results = await Promise.all(promises)
+      for (const [server, state, error] of results) {
+        if (error) {
+          this.logger.warn(`Function server ${server.getName()} returned error while fetching independent functions: `, error)
+          continue
+        }
+        for (const [key, functionInfo] of Object.entries(state)) {
+          if (resultFunctions[key]) {
+            this.logger.warn(`Function server ${server.getName()} returned duplicate function entry '${key}'`)
+            continue
+          }
+          resultFunctions[key] = {
+            ...functionInfo,
+            server
+          }
+        }
+      }
+      return resultFunctions
+    })
+  }
+
+  private async getIndependentState (parentSpan: Span): Promise<State> {
     return startSpan({
       name: 'Requesting independent state',
       op: 'get-independent-state',
@@ -517,7 +565,7 @@ export class Processor {
       for (const server of this.parameters.stateServers) {
         promises.push((async () => {
           try {
-            const state = await server.getIndependentState(sessionId, span)
+            const state = await server.getIndependentState(span)
             return [server, state, undefined]
           } catch (error) {
             return [server, {}, error]

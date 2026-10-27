@@ -6,21 +6,13 @@ import { State, StateServer } from './types'
 export class RemoteStateServer implements StateServer {
   constructor (private readonly url: string) {}
 
-  async getIndependentState (sessionId: string, parentSpan: Span): Promise<State> {
+  async getIndependentState (parentSpan: Span): Promise<State> {
     return startSpan({
       name: `Requesting independent state from ${this.getName()}`,
       op: 'get-independent-state-server',
       parentSpan
     }, async span => {
-      const response = await fetch(this.url, {
-        body: JSON.stringify({
-          sessionId
-        }),
-        headers: {
-          'content-type': 'application/json'
-        },
-        method: 'PUT'
-      })
+      const response = await fetch(this.url)
       const json = await response.json()
       const result = functionStateServerStateResponse.parse(json)
       span.setAttribute('result', JSON.stringify(result, undefined, 2))
@@ -46,7 +38,7 @@ export class RemoteStateServer implements StateServer {
         headers: {
           'content-type': 'application/json'
         },
-        method: 'POST'
+        method: 'PUT'
       })
       const json = await response.json()
       const result = functionStateServerStateResponse.parse(json)

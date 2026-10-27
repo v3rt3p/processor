@@ -4,7 +4,7 @@ import { FunctionStateServerStateResponse } from '@v3rt3p/types/function-state-s
 export type State = FunctionStateServerStateResponse
 
 export interface StateServer {
-  getIndependentState(sessionId: string, parentSpan: Span): Promise<State>
+  getIndependentState(parentSpan: Span): Promise<State>
 
   getName(): string;
 

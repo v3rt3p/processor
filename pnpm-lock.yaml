@@ -33,8 +33,8 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       '@v3rt3p/types':
-        specifier: github:v3rt3p/types#1.0.13
-        version: https://codeload.github.com/v3rt3p/types/tar.gz/875aa762a3a594b282a0e38d50b03d4b895f4fe3
+        specifier: github:v3rt3p/types#1.0.15
+        version: https://codeload.github.com/v3rt3p/types/tar.gz/3df6c93f2b2df92ef268a0b5bb0f5218a9a301cb
       async-sema:
         specifier: ^3.1.1
         version: 3.1.1
@@ -883,8 +883,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@v3rt3p/types@https://codeload.github.com/v3rt3p/types/tar.gz/875aa762a3a594b282a0e38d50b03d4b895f4fe3':
-    resolution: {tarball: https://codeload.github.com/v3rt3p/types/tar.gz/875aa762a3a594b282a0e38d50b03d4b895f4fe3}
+  '@v3rt3p/types@https://codeload.github.com/v3rt3p/types/tar.gz/3df6c93f2b2df92ef268a0b5bb0f5218a9a301cb':
+    resolution: {tarball: https://codeload.github.com/v3rt3p/types/tar.gz/3df6c93f2b2df92ef268a0b5bb0f5218a9a301cb}
     version: 1.0.0
 
   accepts@2.0.0:
@@ -3193,7 +3193,7 @@ snapshots:
   '@unrs/resolver-binding-win32-x64-msvc@1.11.1':
     optional: true
 
-  '@v3rt3p/types@https://codeload.github.com/v3rt3p/types/tar.gz/875aa762a3a594b282a0e38d50b03d4b895f4fe3':
+  '@v3rt3p/types@https://codeload.github.com/v3rt3p/types/tar.gz/3df6c93f2b2df92ef268a0b5bb0f5218a9a301cb':
     dependencies:
       zod: 4.4.3
 
