@@ -142,18 +142,12 @@ export class Processor {
                 role: 'system'
               })
 
-              const state = await this.getIndependentState(prepareSpan)
-              messages.push({
-                content: this.parameters.promptGenerator.generateState(state),
-                role: 'system'
-              })
-
               functions = await this.getIndependentFunctions(
                 [new DirectiveFunctionServer(decodedData.data.directiveFunctions),
                   ...this.parameters.functionServers], prepareSpan)
               messages.push({
                 content: this.parameters.promptGenerator.generateFunctions(functions),
-                role: 'system'
+                role: 'tool'
               })
             })
             break
@@ -167,18 +161,26 @@ export class Processor {
               op: 'process',
               parentSpan: span
             }, async processSpan => {
+              const newFunctions = await this.getFunctions(sessionId, decodedData.data.metadata,
+                this.parameters.functionServers, processSpan)
+
+              messages.push({
+                content: this.parameters.promptGenerator.generateFunctions(newFunctions),
+                role: 'tool'
+              })
+
+              const independentState = await this.getIndependentState(processSpan)
+              messages.push({
+                content: this.parameters.promptGenerator.generateState(independentState),
+                role: 'tool'
+              })
+
               const state = await this.getState(sessionId, decodedData.data.metadata, processSpan)
               messages.push({
                 content: this.parameters.promptGenerator.generateState(state),
-                role: 'system'
+                role: 'tool'
               })
 
-              const newFunctions = await this.getFunctions(sessionId, decodedData.data.metadata,
-                this.parameters.functionServers, processSpan)
-              messages.push({
-                content: this.parameters.promptGenerator.generateFunctions(newFunctions),
-                role: 'system'
-              })
               functions = {
                 ...functions,
                 ...newFunctions
@@ -380,7 +382,7 @@ export class Processor {
 
                   messages.push({
                     content: toolCallResult,
-                    role: 'system'
+                    role: 'tool'
                   })
 
                   return true
