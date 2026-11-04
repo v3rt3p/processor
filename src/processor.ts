@@ -155,7 +155,10 @@ export class Processor {
           case 'process': {
             const request = decodedData.data
 
-            this.logger.info(`Session ${sessionId} process: ${JSON.stringify(request)}`)
+            this.logger.info(`Session ${sessionId} process: ${JSON.stringify({
+              ...request,
+              metadata: '...'
+            })}`)
             await startSpan({
               name: 'Processor processing request',
               op: 'process',
