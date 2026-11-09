@@ -1,2 +1,9 @@
-Also you have the list of added or replaced functions for the outside world that you can call freely. It will be sometimes updated as new system message:
-{{functionsText}}
+{{#unless (isEmpty added)}}
+ALSO, the following functions have been added for you:
+{{#each added}}
+{{@key}} ({{this.description}}): {{#if this.hasResponse}}(WITH response), {{/if}}schema: {{schemaToJson this.argumentsSchema}}
+{{/each}}
+{{/unless}}
+{{#unless (isEmpty removed)}}
+ALSO, the following functions have been removed: {{#each removed}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}
+{{/unless}}

@@ -1,2 +1,15 @@
-Also you have the latest state of the outside world that you can use in replies. It will be sometimes updated as new system message:
-{{stateText}}
+{{#unless (isEmpty added)}}
+ALSO, the following state have been added for you:
+{{#each added}}
+{{@key}} ({{this.description}}): ({{this.value}})
+{{/each}}
+{{/unless}}
+{{#unless (isEmpty changed)}}
+ALSO, the following state has been changed:
+{{#each changed}}
+{{@key}} ({{this.description}}): ({{this.value}})
+{{/each}}
+{{/unless}}
+{{#unless (isEmpty removed)}}
+ALSO, the following state have been removed: {{#each removed}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}
+{{/unless}}

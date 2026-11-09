@@ -83,6 +83,7 @@ const nlpService = new NlpServiceClient(environment.NLP_SERVICE_URL, environment
 
 const processor = new Processor({
   cacheSize: environment.CACHE_SIZE,
+  errorResponseText: environment.ERROR_RESPONSE_TEXT,
   functionServers,
   model: environment.OPENAI_MODEL,
   nlpService,
@@ -90,6 +91,7 @@ const processor = new Processor({
   promptGenerator,
   reasoningEffort: environment.OPENAI_REASONING_EFFORT,
   sessionStorage,
+  stateFunctionsMessagesType: environment.STATE_FUNCTIONS_MESSAGES_TYPE,
   stateServers
 })
 

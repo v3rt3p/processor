@@ -1,8 +1,9 @@
-import { Functions } from '../function/types'
+import { Diff } from '../../differ'
+import { FunctionInfo } from '../function/types'
 import { State } from '../state/types'
 
 export interface PromptGenerator {
   generate(): string;
-  generateFunctions(functions: Functions): string;
-  generateState(state: State): string;
+  generateFunctions(functionsDiff: Diff<FunctionInfo>): string;
+  generateState(stateDiff: Diff<State[string]>): string;
 }

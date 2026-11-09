@@ -9,6 +9,7 @@ import { ReasoningEffort } from 'openai/resources/shared.js'
 import { WebSocket } from 'ws'
 import z from 'zod'
 
+import { Differ, isDiffEmpty, mergeDiffs } from './differ'
 import { DirectiveFunctionServer, DirectiveResult } from './llm/function/directive'
 import { FunctionCall, FunctionInfo, Functions, FunctionServer } from './llm/function/types'
 import { PromptGenerator } from './llm/prompt-generator/types'
@@ -30,6 +31,7 @@ type ExtendedFunctions = Record<string, ExtendedFunctionInfo>
 
 interface ProcessorParameters {
   cacheSize: number;
+  errorResponseText: string;
   functionServers: FunctionServer[];
   model: string;
   nlpService: NlpServiceClient;
@@ -37,6 +39,7 @@ interface ProcessorParameters {
   promptGenerator: PromptGenerator;
   reasoningEffort?: string;
   sessionStorage: SessionStorage<LLMMessage[]>;
+  stateFunctionsMessagesType: 'system' | 'tool';
   stateServers: StateServer[];
 }
 
@@ -105,7 +108,12 @@ export class Processor {
     const messages: LLMMessage[] = []
     const sessionId = randomUUID()
     let isFirstRequest = true
-    let functions: ExtendedFunctions
+
+    const independentFunctions = new Differ<ExtendedFunctionInfo>(() => '')
+    const dependentFunctions = new Differ<ExtendedFunctionInfo>(() => '')
+    const independentState = new Differ<State[string]>(value => value.value)
+    const dependentState = new Differ<State[string]>(value => value.value)
+    let directiveFunctionServer: FunctionServer | null = null
 
     async function send (message: ProcessorServerWebSocketMessage): Promise<void> {
       return new Promise<void>((resolve, reject) => webSocket.send(JSON.stringify(message), (error) => {
@@ -142,13 +150,24 @@ export class Processor {
                 role: 'system'
               })
 
-              functions = await this.getIndependentFunctions(
-                [new DirectiveFunctionServer(decodedData.data.directiveFunctions),
-                  ...this.parameters.functionServers], prepareSpan)
-              messages.push({
-                content: this.parameters.promptGenerator.generateFunctions(functions),
-                role: 'tool'
-              })
+              directiveFunctionServer = new DirectiveFunctionServer(decodedData.data.directiveFunctions)
+
+              const stateDiff = independentState.addNewData(await this.getIndependentState(prepareSpan))
+              const functionsDiff = independentFunctions.addNewData(await this.getIndependentFunctions(
+                [directiveFunctionServer, ...this.parameters.functionServers], prepareSpan))
+
+              if (!isDiffEmpty(stateDiff)) {
+                messages.push({
+                  content: this.parameters.promptGenerator.generateState(stateDiff),
+                  role: this.parameters.stateFunctionsMessagesType
+                })
+              }
+              if (!isDiffEmpty(functionsDiff)) {
+                messages.push({
+                  content: this.parameters.promptGenerator.generateFunctions(functionsDiff),
+                  role: this.parameters.stateFunctionsMessagesType
+                })
+              }
             })
             break
           }
@@ -164,234 +183,271 @@ export class Processor {
               op: 'process',
               parentSpan: span
             }, async processSpan => {
-              const newFunctions = await this.getFunctions(sessionId, decodedData.data.metadata,
-                this.parameters.functionServers, processSpan)
+              const independentStateDiff = independentState.addNewData(await this.getIndependentState(processSpan))
+              const independentFunctionsDiff = independentFunctions.addNewData(await this.getIndependentFunctions(
+                directiveFunctionServer
+                  ? [directiveFunctionServer, ...this.parameters.functionServers]
+                  : this.parameters.functionServers, processSpan))
 
-              messages.push({
-                content: this.parameters.promptGenerator.generateFunctions(newFunctions),
-                role: 'tool'
-              })
+              const dependentStateDiff = dependentState.addNewData(await this.getState(sessionId,
+                decodedData.data.metadata, processSpan))
+              const dependentFunctionsDiff = dependentFunctions.addNewData(await this.getFunctions(sessionId,
+                decodedData.data.metadata, this.parameters.functionServers, processSpan))
 
-              const independentState = await this.getIndependentState(processSpan)
-              messages.push({
-                content: this.parameters.promptGenerator.generateState(independentState),
-                role: 'tool'
-              })
+              const stateDiff = mergeDiffs(independentStateDiff, dependentStateDiff)
+              const functionsDiff = mergeDiffs(independentFunctionsDiff, dependentFunctionsDiff)
 
-              const state = await this.getState(sessionId, decodedData.data.metadata, processSpan)
-              messages.push({
-                content: this.parameters.promptGenerator.generateState(state),
-                role: 'tool'
-              })
+              if (!isDiffEmpty(stateDiff)) {
+                messages.push({
+                  content: this.parameters.promptGenerator.generateState(stateDiff),
+                  role: this.parameters.stateFunctionsMessagesType
+                })
+              }
+              if (!isDiffEmpty(functionsDiff)) {
+                messages.push({
+                  content: this.parameters.promptGenerator.generateFunctions(functionsDiff),
+                  role: this.parameters.stateFunctionsMessagesType
+                })
+              }
 
-              functions = {
-                ...functions,
-                ...newFunctions
+              const functions = {
+                ...independentFunctions.getAll(),
+                ...dependentFunctions.getAll()
               }
 
               const text = request.text.trim()
 
-              const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
-              if (nlpResult?.kind === 'response') {
-                isFirstRequest = false
+              if (text === '') {
                 await send({
                   data: {
                     directives: [],
                     finished: true,
                     shouldListen: false,
-                    text: nlpResult.text
+                    text: ''
                   },
                   type: 'partialResponse'
                 })
                 webSocket.close()
-                return
-              }
-              if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
-                const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
-                  sessionId,
-                  request.metadata.internal,
-                  functions,
-                  nlpResult.functionCalls,
-                  processSpan
-                )
-                await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
-                const responseResults = await Promise.all(responsePromises)
-                const resultText = responseResults
-                  .map(([function_, value]) => `${function_}: ${value}`)
-                  .join(String.raw`\n`)
-                await send({
-                  data: {
-                    directives,
-                    ...(responsePromises.length === 0
-                      ? { finished: true, shouldListen: false }
-                      : { finished: false }),
-                    text: resultText
-                  },
-                  type: 'partialResponse'
-                })
-                if (responsePromises.length === 0) webSocket.close()
-                return
               }
 
-              messages.push({
-                content: text,
-                role: 'user'
-              })
-
-              while (true) {
-                if (!await startSpan({
-                  name: 'Single agent operation',
-                  op: 'single-agent-operation',
-                  parentSpan: processSpan
-                }, async singleOperationSpan => {
-                  this.logger.info(`Processing ${messages.length} messages`)
-
-                  const directiveResults: DirectiveResult[] = []
-                  const hasResponsePromises: Promise<[string, string]>[] = []
-                  const noResponsePromises: Promise<void>[] = []
-
-                  let responseContent: string = ''
-                  let structuredResponse: StructuredResponse
-
-                  const cachedResponse = this.cache.get(text)
-
-                  if (isFirstRequest && cachedResponse) {
-                    responseContent = cachedResponse
-                    this.logger.info(`Received answer from cache: ${responseContent}`)
-
-                    structuredResponse = parseLLMResponse(JSON.parse(responseContent))
-
-                    const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
-                      await this.callFunctions(sessionId, request.metadata.internal, functions,
-                        structuredResponse.functionCalls, singleOperationSpan)
-
-                    directiveResults.push(...newDirectiveResults)
-                    hasResponsePromises.push(...functionsWithResponsePromises)
-                    noResponsePromises.push(...functionsPromises)
-                  } else {
-                    this.logger.info('Querying LLM')
-                    const callFunctionsPromises: Promise<[DirectiveResult[], Promise<void>,
-                      Promise<[string, string]>]>[] = []
-
-                    const jsonParser = new JSONParser()
-                    jsonParser.onValue = async (value) => {
-                      if (value.stack.length === 2 && value.stack[0]?.key === undefined &&
-                        value.stack[1]?.key === 'function_calls' && typeof value.key === 'number') {
-                        this.logger.info(`Found function call: ${JSON.stringify(value.value)}`)
-                        try {
-                          const parsed = parseFunctionCall(value.value)
-                          if (!parsed) {
-                            throw new Error('empty')
-                          }
-                          const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
-                          await this.callFunctions(sessionId, request.metadata.internal, functions,
-                            [parsed], singleOperationSpan)
-
-                          directiveResults.push(...newDirectiveResults)
-                          hasResponsePromises.push(...functionsWithResponsePromises)
-                          noResponsePromises.push(...functionsPromises)
-                        } catch (error) {
-                          this.logger.warn('Failed to parse function call: ', error)
-                        }
-                      }
-                    }
-
-                    let firstWasPrint = false
-
-                    const beforeTime = new Date()
-                    const llmCompletionsFullSpan = startInactiveSpan({
-                      name: 'LLM full processing',
-                      op: 'llm-full',
-                      parentSpan: singleOperationSpan
-                    })
-                    const llmTTFTSpan = startInactiveSpan({
-                      name: 'LLM TTFT',
-                      op: 'llm-ttft',
-                      parentSpan: llmCompletionsFullSpan
-                    })
-
-                    const response = await this.parameters.openAI.chat.completions.create({
-                      messages,
-                      model: this.parameters.model,
-                      reasoning_effort: this.parameters.reasoningEffort as ReasoningEffort,
-                      stream: true
-                    })
-
-                    for await (const chunk of response) {
-                      if (!firstWasPrint) {
-                        logger.info(`TTFT: ${Date.now() - beforeTime.getTime()}ms`)
-                        llmTTFTSpan.end()
-                        firstWasPrint = true
-                      }
-                      const part = chunk.choices[0]?.delta?.content
-                      if (!part) {
-                        continue
-                      }
-                      responseContent += part
-                      jsonParser.write(part)
-                    }
-                    logger.info(`Full query time: ${Date.now() - beforeTime.getTime()}ms`)
-                    llmCompletionsFullSpan.end()
-
-                    const result = await Promise.all(callFunctionsPromises)
-
-                    for (const part of result) {
-                      directiveResults.push(...part[0])
-                      part[1].catch(error => this.logger.error('Failed to call functions: ', error))
-                    }
-
-                    this.logger.info(`Received answer from LLM: '${responseContent}'`)
-
-                    structuredResponse = parseLLMResponse(JSON.parse(responseContent))
-                  }
-
-                  await Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
-
-                  messages.push({
-                    content: responseContent,
-                    role: 'assistant'
-                  })
-
-                  if (!structuredResponse.requireMoreInput && structuredResponse.canCache &&
-                    isFirstRequest && hasResponsePromises.length === 0) {
-                    this.cache.set(text, responseContent)
-                    this.logger.info(`Saved answer to cache: '${text}' -> ${responseContent}`)
-                  }
-
+              try {
+                const nlpResult = await this.parameters.nlpService.parse(text, functions, request.metadata, sessionId)
+                if (nlpResult?.kind === 'response') {
                   isFirstRequest = false
-
                   await send({
                     data: {
-                      directives: directiveResults,
-                      finished: hasResponsePromises.length === 0,
-                      shouldListen: structuredResponse.requireMoreInput,
-                      text: structuredResponse.text
+                      directives: [],
+                      finished: true,
+                      shouldListen: false,
+                      text: nlpResult.text
                     },
                     type: 'partialResponse'
                   })
-
-                  if (hasResponsePromises.length === 0) {
-                    if (!structuredResponse.requireMoreInput) {
-                      webSocket.close()
-                    }
-                    return false
-                  }
-
-                  const result = await Promise.all(hasResponsePromises)
-                  let toolCallResult = ''
-                  for (const [function_, value] of result) {
-                    toolCallResult += `${function_}: ${value}\n`
-                  }
-
-                  messages.push({
-                    content: toolCallResult,
-                    role: 'tool'
-                  })
-
-                  return true
-                })) {
-                  break
+                  webSocket.close()
+                  return
                 }
+                if (nlpResult?.kind === 'function_calls' && nlpResult.functionCalls.length > 0) {
+                  const [directives, noResponsePromises, responsePromises] = await this.callFunctions(
+                    sessionId,
+                    request.metadata.internal,
+                    functions,
+                    nlpResult.functionCalls,
+                    processSpan
+                  )
+                  await Promise.all(noResponsePromises).catch(error => this.logger.warn('Failed to call NLP functions: ', error))
+                  const responseResults = await Promise.all(responsePromises)
+                  const resultText = responseResults
+                    .map(([function_, value]) => `${function_}: ${value}`)
+                    .join(String.raw`\n`)
+                  await send({
+                    data: {
+                      directives,
+                      ...(responsePromises.length === 0
+                        ? { finished: true, shouldListen: false }
+                        : { finished: false }),
+                      text: resultText
+                    },
+                    type: 'partialResponse'
+                  })
+                  if (responsePromises.length === 0) webSocket.close()
+                  return
+                }
+
+                messages.push({
+                  content: text,
+                  role: 'user'
+                })
+
+                while (true) {
+                  if (!await startSpan({
+                    name: 'Single agent operation',
+                    op: 'single-agent-operation',
+                    parentSpan: processSpan
+                  }, async singleOperationSpan => {
+                    this.logger.info(`Processing ${messages.length} messages`)
+
+                    const directiveResults: DirectiveResult[] = []
+                    const hasResponsePromises: Promise<[string, string]>[] = []
+                    const noResponsePromises: Promise<void>[] = []
+
+                    let responseContent: string = ''
+                    let structuredResponse: StructuredResponse
+
+                    const cachedResponse = this.cache.get(text)
+
+                    if (isFirstRequest && cachedResponse) {
+                      responseContent = cachedResponse
+                      this.logger.info(`Received answer from cache: ${responseContent}`)
+
+                      structuredResponse = parseLLMResponse(JSON.parse(responseContent))
+
+                      const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
+                      await this.callFunctions(sessionId, request.metadata.internal, functions,
+                        structuredResponse.functionCalls, singleOperationSpan)
+
+                      directiveResults.push(...newDirectiveResults)
+                      hasResponsePromises.push(...functionsWithResponsePromises)
+                      noResponsePromises.push(...functionsPromises)
+                    } else {
+                      this.logger.info('Querying LLM')
+                      const callFunctionsPromises: Promise<[DirectiveResult[], Promise<void>,
+                        Promise<[string, string]>]>[] = []
+
+                      const jsonParser = new JSONParser()
+                      jsonParser.onValue = async (value) => {
+                        if (value.stack.length === 2 && value.stack[0]?.key === undefined &&
+                        value.stack[1]?.key === 'function_calls' && typeof value.key === 'number') {
+                          this.logger.info(`Found function call: ${JSON.stringify(value.value)}`)
+                          try {
+                            const parsed = parseFunctionCall(value.value)
+                            if (!parsed) {
+                              throw new Error('empty')
+                            }
+                            const [newDirectiveResults, functionsPromises, functionsWithResponsePromises] =
+                            await this.callFunctions(sessionId, request.metadata.internal, functions,
+                              [parsed], singleOperationSpan)
+
+                            directiveResults.push(...newDirectiveResults)
+                            hasResponsePromises.push(...functionsWithResponsePromises)
+                            noResponsePromises.push(...functionsPromises)
+                          } catch (error) {
+                            this.logger.warn('Failed to parse function call: ', error)
+                          }
+                        }
+                      }
+
+                      let firstWasPrint = false
+
+                      const beforeTime = new Date()
+                      const llmCompletionsFullSpan = startInactiveSpan({
+                        name: 'LLM full processing',
+                        op: 'llm-full',
+                        parentSpan: singleOperationSpan
+                      })
+                      const llmTTFTSpan = startInactiveSpan({
+                        name: 'LLM TTFT',
+                        op: 'llm-ttft',
+                        parentSpan: llmCompletionsFullSpan
+                      })
+
+                      logger.debug(`LLM messages: ${JSON.stringify(messages, undefined, 2)}`)
+
+                      const response = await this.parameters.openAI.chat.completions.create({
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        messages: messages as any,
+                        model: this.parameters.model,
+                        reasoning_effort: this.parameters.reasoningEffort as ReasoningEffort,
+                        stream: true
+                      })
+
+                      for await (const chunk of response) {
+                        if (!firstWasPrint) {
+                          logger.info(`TTFT: ${Date.now() - beforeTime.getTime()}ms`)
+                          llmTTFTSpan.end()
+                          firstWasPrint = true
+                        }
+                        const part = chunk.choices[0]?.delta?.content
+                        if (!part) {
+                          continue
+                        }
+                        responseContent += part
+                        jsonParser.write(part)
+                      }
+                      logger.info(`Full query time: ${Date.now() - beforeTime.getTime()}ms`)
+                      llmCompletionsFullSpan.end()
+
+                      const result = await Promise.all(callFunctionsPromises)
+
+                      for (const part of result) {
+                        directiveResults.push(...part[0])
+                        part[1].catch(error => this.logger.error('Failed to call functions: ', error))
+                      }
+
+                      this.logger.info(`Received answer from LLM: '${responseContent}'`)
+
+                      structuredResponse = parseLLMResponse(JSON.parse(responseContent))
+                    }
+
+                    await Promise.all(noResponsePromises).catch(error => this.logger.warn(`Failed to call no-response functions: ${error}`))
+
+                    messages.push({
+                      content: responseContent,
+                      role: 'assistant'
+                    })
+
+                    if (!structuredResponse.requireMoreInput && structuredResponse.canCache &&
+                    isFirstRequest && hasResponsePromises.length === 0) {
+                      this.cache.set(text, responseContent)
+                      this.logger.info(`Saved answer to cache: '${text}' -> ${responseContent}`)
+                    }
+
+                    isFirstRequest = false
+
+                    await send({
+                      data: {
+                        directives: directiveResults,
+                        finished: hasResponsePromises.length === 0,
+                        shouldListen: structuredResponse.requireMoreInput,
+                        text: structuredResponse.text
+                      },
+                      type: 'partialResponse'
+                    })
+
+                    if (hasResponsePromises.length === 0) {
+                      if (!structuredResponse.requireMoreInput) {
+                        webSocket.close()
+                      }
+                      return false
+                    }
+
+                    const result = await Promise.all(hasResponsePromises)
+                    let toolCallResult = ''
+                    for (const [function_, value] of result) {
+                      toolCallResult += `${function_}: ${value}\n`
+                    }
+
+                    messages.push({
+                      content: toolCallResult,
+                      role: 'tool'
+                    })
+
+                    return true
+                  })) {
+                    break
+                  }
+                }
+              } catch (error) {
+                this.logger.error(error)
+                await send({
+                  data: {
+                    directives: [],
+                    finished: true,
+                    shouldListen: false,
+                    text: this.parameters.errorResponseText
+                  },
+                  type: 'partialResponse'
+                })
+                webSocket.close()
               }
             })
           }
