@@ -228,6 +228,7 @@ export class Processor {
                   type: 'partialResponse'
                 })
                 webSocket.close()
+                return
               }
 
               try {
