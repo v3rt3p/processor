@@ -1,11 +1,12 @@
 import { Span, startSpan } from '@sentry/node'
-import { functions } from '@v3rt3p/types/function-state-server'
+import { functions, functionStateServerCallFunctionResponse } from '@v3rt3p/types/function-state-server'
 import z from 'zod'
 
 import { Functions, FunctionServer } from './types'
 
 export class RemoteFunctionServer implements FunctionServer {
   constructor (private readonly url: string) {}
+
   async callFunction (sessionId: string, metadata: object, name: string,
     arguments_: unknown, parentSpan: Span): Promise<string> {
     return startSpan({
@@ -15,8 +16,8 @@ export class RemoteFunctionServer implements FunctionServer {
       name: `Calling function ${name} on ${this.getName()}`,
       op: 'call-function',
       parentSpan
-    }, async () => {
-      await fetch(this.url, {
+    }, async span => {
+      const response = await fetch(this.url, {
         body: JSON.stringify({
           arguments: arguments_,
           metadata,
@@ -28,7 +29,10 @@ export class RemoteFunctionServer implements FunctionServer {
         },
         method: 'POST'
       })
-      return ''
+      const result = functionStateServerCallFunctionResponse.parse(await response.json())
+      const callResponse = JSON.stringify(result.response)
+      span.setAttribute('result', callResponse)
+      return callResponse
     })
   }
 
